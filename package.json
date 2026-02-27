@@ -1,0 +1,17 @@
+{
+  "name": "zen-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Zen Browser automation via WebDriver BiDi",
+  "type": "module",
+  "bin": {
+    "zen-mcp": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "launch-zen": "open /Applications/Zen.app --args --remote-debugging-port 9222"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "puppeteer-core": "^24.0.0"
+  }
+}

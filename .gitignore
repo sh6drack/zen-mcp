@@ -1,0 +1,4 @@
+node_modules/
+.DS_Store
+test-bidi.mjs
+test-e2e.mjs
