@@ -1,6 +1,7 @@
 {
   "name": "zen-mcp",
-  "version": "1.2.0",
+  "version": "1.2.1",
+  "mcpName": "io.github.sh6drack/zen-mcp",
   "description": "MCP server for Zen Browser automation via WebDriver BiDi",
   "type": "module",
   "license": "MIT",

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.sh6drack/zen-mcp",
+  "description": "MCP server for Zen Browser automation via WebDriver BiDi",
+  "repository": {
+    "url": "https://github.com/sh6drack/zen-mcp",
+    "source": "github"
+  },
+  "version": "1.2.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "zen-mcp",
+      "version": "1.2.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "description": "Zen Browser remote debugging port",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ZEN_DEBUG_PORT"
+        }
+      ]
+    }
+  ]
+}
