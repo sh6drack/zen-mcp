@@ -17,7 +17,10 @@ No Selenium. No Playwright. No browser drivers. Just WebSocket.
 ### 2. Add to Claude Code
 
 ```bash
-# Clone
+# Option A: npm (recommended)
+npm install -g zen-mcp
+
+# Option B: Clone
 git clone https://github.com/sh6drack/zen-mcp.git && cd zen-mcp && npm install
 ```
 
@@ -27,12 +30,13 @@ Add to `~/.claude/mcp_servers.json`:
 {
   "mcpServers": {
     "zen-browser": {
-      "command": "node",
-      "args": ["/absolute/path/to/zen-mcp/server.mjs"]
+      "command": "zen-mcp"
     }
   }
 }
 ```
+
+> If you cloned instead of npm install, use `"command": "node", "args": ["/absolute/path/to/zen-mcp/server.mjs"]`
 
 Add to `~/.claude/settings.json`:
 
@@ -95,6 +99,20 @@ Claude Code  ──stdio/MCP──>  zen-mcp  ──WebSocket/BiDi──>  Zen B
 ```
 
 zen-mcp speaks **WebDriver BiDi** (W3C standard) directly over WebSocket. Form filling uses native value setters with `input`/`change` event dispatch so React, Vue, and Angular apps work correctly.
+
+### What Works Well
+
+- **Navigation, clicking, form filling** — rock solid, handles React/Vue/Angular
+- **Screenshots and page reads** — reliable content extraction
+- **Tab management** — open, close, switch between tabs
+- **JavaScript evaluation** — run any code in the page context
+- **Keyboard input** — shortcuts, Enter, Tab, modifier combos
+
+### Known Limitations
+
+- Zen inherits Firefox's WebDriver BiDi implementation, which is still maturing. Some advanced BiDi commands that work in Chrome may not be available yet.
+- Zombie sessions can only be cleared by restarting Zen (BiDi session.end is connection-scoped). zen-mcp detects this and tells you what to do.
+- No file upload or drag-and-drop support (BiDi spec limitation).
 
 ### Built-in Reliability
 
