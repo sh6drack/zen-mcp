@@ -3,13 +3,34 @@
   "version": "1.2.0",
   "description": "MCP server for Zen Browser automation via WebDriver BiDi",
   "type": "module",
+  "license": "MIT",
   "bin": {
     "zen-mcp": "./server.mjs"
   },
   "scripts": {
     "start": "node server.mjs",
+    "test": "node test-e2e.mjs",
     "launch-zen": "open /Applications/Zen.app --args --remote-debugging-port 9222"
   },
+  "keywords": [
+    "mcp",
+    "zen-browser",
+    "browser-automation",
+    "webdriver-bidi",
+    "claude",
+    "ai-agent",
+    "model-context-protocol"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sh6drack/zen-mcp.git"
+  },
+  "homepage": "https://github.com/sh6drack/zen-mcp",
+  "files": [
+    "server.mjs",
+    "launch-zen.sh",
+    "README.md"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0"
   }

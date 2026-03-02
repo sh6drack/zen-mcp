@@ -1,38 +1,25 @@
 # zen-mcp
 
-MCP server for **Zen Browser** automation. The first Model Context Protocol server built for Zen.
+The first MCP server for **Zen Browser**. Automate Zen from Claude Code, Cursor, or any MCP client.
 
-Connects directly to Zen's WebDriver BiDi protocol over WebSocket, giving AI agents full browser control — navigate pages, fill forms, click elements, run JavaScript, take screenshots, and more.
+No Selenium. No Playwright. No browser drivers. Just WebSocket.
 
-## Why
+## Setup (2 minutes)
 
-Zen Browser is Firefox-based. The existing [chrome-devtools-mcp](https://github.com/anthropics/claude-code) only works with Chrome/Chromium. Zen doesn't support the Chrome DevTools Protocol (CDP) — it uses **WebDriver BiDi**, a W3C standard for browser automation.
-
-zen-mcp speaks BiDi natively. No Selenium. No Playwright. No browser driver binaries. Just a direct WebSocket connection.
-
-## Quick Start
-
-### 1. Install
-
-```bash
-git clone https://github.com/sh6drack/zen-mcp.git
-cd zen-mcp
-npm install
-```
-
-### 2. Launch Zen with remote debugging
+### 1. Start Zen with remote debugging
 
 ```bash
 /Applications/Zen.app/Contents/MacOS/zen --remote-debugging-port 9222
 ```
 
-Or use the included helper:
+> **Pro tip**: Add `alias zen='open /Applications/Zen.app --args --remote-debugging-port 9222'` to your shell config. Then just run `zen`.
+
+### 2. Add to Claude Code
 
 ```bash
-./launch-zen.sh
+# Clone
+git clone https://github.com/sh6drack/zen-mcp.git && cd zen-mcp && npm install
 ```
-
-### 3. Add to Claude Code
 
 Add to `~/.claude/mcp_servers.json`:
 
@@ -41,16 +28,13 @@ Add to `~/.claude/mcp_servers.json`:
   "mcpServers": {
     "zen-browser": {
       "command": "node",
-      "args": ["/path/to/zen-mcp/server.mjs"],
-      "env": {
-        "ZEN_DEBUG_PORT": "9222"
-      }
+      "args": ["/absolute/path/to/zen-mcp/server.mjs"]
     }
   }
 }
 ```
 
-Then add permissions in `~/.claude/settings.json`:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -60,83 +44,88 @@ Then add permissions in `~/.claude/settings.json`:
 }
 ```
 
-Start a new Claude Code conversation. The `zen_*` tools will be available.
+**That's it.** Start a new Claude Code session and the `zen_*` tools are available.
 
-## Tools
+## 20 Tools
 
-| Tool | Description |
+### Browse
+
+| Tool | What it does |
 |------|-------------|
-| `zen_list_pages` | List all open tabs with URLs and titles |
-| `zen_select_page` | Switch active tab by index |
-| `zen_new_tab` | Open a new tab, optionally with a URL |
-| `zen_navigate` | Navigate to a URL |
-| `zen_snapshot` | Structured page snapshot with CSS selectors (filter: all/interactive/form) |
-| `zen_screenshot` | Capture page screenshot |
-| `zen_click` | Click an element by CSS selector |
-| `zen_fill` | Fill a text input or textarea (framework-compatible event dispatching) |
-| `zen_select_option` | Select a dropdown option by value or text |
-| `zen_check` | Check/uncheck a checkbox or radio button |
-| `zen_evaluate` | Execute JavaScript in the page context |
-| `zen_get_form_fields` | List all form fields with types, labels, values, and selectors |
-| `zen_fill_form` | Batch fill multiple form fields (fill/select/check/click) |
-| `zen_scroll` | Scroll the page or scroll an element into view |
-| `zen_wait` | Wait for a specified time |
+| `zen_navigate` | Go to a URL |
+| `zen_list_pages` | List all open tabs |
+| `zen_select_page` | Switch to a tab |
+| `zen_new_tab` | Open a new tab |
+| `zen_close_tab` | Close a tab |
+
+### See
+
+| Tool | What it does |
+|------|-------------|
+| `zen_snapshot` | Page structure with selectors (filter: all/interactive/form) |
+| `zen_screenshot` | Capture a screenshot |
+| `zen_get_page_text` | Get page title, URL, and text |
+| `zen_get_form_fields` | List all form fields with labels and values |
+
+### Interact
+
+| Tool | What it does |
+|------|-------------|
+| `zen_click` | Click an element |
+| `zen_fill` | Type into an input or textarea |
+| `zen_select_option` | Pick a dropdown option |
+| `zen_check` | Toggle a checkbox or radio |
+| `zen_press_key` | Keyboard input (Enter, Tab, Ctrl+A, etc.) |
+| `zen_fill_form` | Fill multiple fields at once |
+| `zen_scroll` | Scroll the page or to an element |
+
+### Utility
+
+| Tool | What it does |
+|------|-------------|
+| `zen_evaluate` | Run JavaScript in the page |
+| `zen_wait` | Wait N milliseconds |
+| `zen_wait_for` | Wait for text or element to appear |
+| `zen_reconnect` | Force reconnect to Zen |
 
 ## How It Works
 
 ```
-Claude Code  <-->  zen-mcp (MCP/stdio)  <-->  Zen Browser (BiDi/WebSocket)
+Claude Code  ──stdio/MCP──>  zen-mcp  ──WebSocket/BiDi──>  Zen Browser
 ```
 
-1. Claude Code starts zen-mcp as a child process, communicating over stdio using MCP protocol
-2. zen-mcp connects to Zen's WebDriver BiDi server at `ws://127.0.0.1:9222/session`
-3. Tool calls are translated to BiDi commands (`browsingContext.navigate`, `script.callFunction`, `browsingContext.captureScreenshot`, etc.)
-4. DOM interactions use `script.callFunction` with native value setters and proper event dispatching for React/Angular/Vue compatibility
+zen-mcp speaks **WebDriver BiDi** (W3C standard) directly over WebSocket. Form filling uses native value setters with `input`/`change` event dispatch so React, Vue, and Angular apps work correctly.
 
-### Key Details
+### Built-in Reliability
 
-- **Protocol**: WebDriver BiDi (W3C standard), not CDP
-- **WebSocket endpoint**: `ws://127.0.0.1:{port}/session` (Firefox/Zen puts BiDi at `/session`, not root)
-- **Session management**: Creates a BiDi session on first tool call, cleans up on exit
-- **Form filling**: Uses native `HTMLInputElement.prototype.value` setter + `input`/`change` event dispatch for framework compatibility
-- **No dependencies on browser drivers** — just `ws` for WebSocket and `@modelcontextprotocol/sdk` for MCP
+- **Auto-reconnect** with exponential backoff if WebSocket drops
+- **Zombie session recovery** when a previous client crashed
+- **Connection retry** (3 attempts with backoff)
+- **Clean shutdown** on SIGINT/SIGTERM to prevent orphaned sessions
 
-## Configuration
+## Troubleshooting
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `ZEN_DEBUG_PORT` | `9222` | Port for Zen's remote debugging server |
+| Problem | Fix |
+|---------|-----|
+| "Cannot connect to Zen Browser" | Start Zen with `--remote-debugging-port 9222` |
+| "Maximum number of active sessions" | Restart Zen: `killall zen && zen` |
+| Connection keeps dropping | Use `zen_reconnect` to force a fresh connection |
 
-### Zen Launch Flags
+## Config
 
-```bash
-# Basic
-/Applications/Zen.app/Contents/MacOS/zen --remote-debugging-port 9222
-
-# With security restrictions (recommended for production)
-/Applications/Zen.app/Contents/MacOS/zen \
-  --remote-debugging-port 9222 \
-  --remote-allow-hosts localhost,127.0.0.1 \
-  --remote-allow-origins '*'
-```
-
-**Tip**: Add an alias to your shell config:
-
-```bash
-alias zen='open /Applications/Zen.app --args --remote-debugging-port 9222'
-```
+| Env Variable | Default | Description |
+|-------------|---------|-------------|
+| `ZEN_DEBUG_PORT` | `9222` | Zen's remote debugging port |
 
 ## Requirements
 
-- [Zen Browser](https://zen-browser.app/) (any version)
+- [Zen Browser](https://zen-browser.app/)
 - Node.js 20+
-- macOS, Linux, or Windows (paths in examples are macOS)
 
 ## Test
 
 ```bash
-# Make sure Zen is running with --remote-debugging-port 9222
-node test-e2e.mjs
+node test-e2e.mjs   # 21 tests, needs Zen running
 ```
 
 ## License
