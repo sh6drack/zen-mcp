@@ -20,7 +20,110 @@ const WS_URL = `ws://127.0.0.1:${PORT}/session`;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY = 1000; // ms
 
+// Opt-in hardening (default OFF): also block navigation to loopback / private /
+// link-local hosts to limit SSRF-style reach into local dev servers and intranet
+// admin panels. Off by default because automating a localhost dev server is a
+// common, legitimate use of this tool. Enable with ZEN_BLOCK_PRIVATE_HOSTS=1.
+const BLOCK_PRIVATE_HOSTS = /^(1|true|yes|on)$/i.test(process.env.ZEN_BLOCK_PRIVATE_HOSTS || '');
+
+// Opt-in hardening (default OFF): strip the query string and fragment from URLs
+// returned to the LLM (zen_list_pages, zen_get_page_text, zen_select_page,
+// zen_close_tab). Query strings often carry OAuth codes, password-reset tokens
+// and signed-URL parameters. Off by default because the agent frequently needs
+// full URLs (pagination, SPA state). Enable with ZEN_REDACT_URLS=1.
+const REDACT_URLS = /^(1|true|yes|on)$/i.test(process.env.ZEN_REDACT_URLS || '');
+
 function log(...args) { console.error('[zen-mcp]', ...args); }
+
+// ─── Security helpers ───────────────────────────────────────────────
+
+/**
+ * Best-effort check for loopback / private / link-local / intranet hosts.
+ * Used only when ZEN_BLOCK_PRIVATE_HOSTS is enabled. Covers the common IPv4
+ * ranges, a few IPv6 prefixes, and intranet-style hostname suffixes.
+ */
+function isPrivateHost(hostname) {
+  if (!hostname) return true; // no host -> treat as unsafe
+  let h = hostname.toLowerCase().replace(/\.$/, '');
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1); // strip IPv6 brackets
+
+  // Non-IP intranet / loopback names
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return true;
+
+  // IPv4 literal
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = Number(m[1]), b = Number(m[2]);
+    if (a === 127 || a === 10 || a === 0) return true;       // loopback / private / this-host
+    if (a === 192 && b === 168) return true;                 // private
+    if (a === 172 && b >= 16 && b <= 31) return true;        // private
+    if (a === 169 && b === 254) return true;                 // link-local
+    return false;
+  }
+
+  // IPv6 literal: loopback, unspecified, ULA (fc00::/7), link-local (fe80::/10)
+  if (h === '::1' || h === '::') return true;
+  if (h.startsWith('fc') || h.startsWith('fd')) return true;
+  if (/^fe[89ab]/.test(h)) return true;
+  // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
+  if (h.includes(':')) {
+    const v4 = h.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (v4) return isPrivateHost(v4[1]);
+  }
+  return false;
+}
+
+/**
+ * Restrict navigation to a safe scheme allowlist: http/https, plus about:blank
+ * for new blank tabs. Schemes such as file:, data:, blob:, javascript:, chrome:,
+ * resource: and view-source: can read local files or browser internals and are
+ * the primary local-data exfiltration vectors, so they are rejected.
+ *
+ * Throws on a disallowed or unparseable URL; returns the url when allowed.
+ */
+function assertNavigableUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(
+      `Invalid URL: ${JSON.stringify(url)}. Provide an absolute URL such as https://example.com`
+    );
+  }
+  const scheme = parsed.protocol.toLowerCase();
+  if (scheme === 'about:' && parsed.href === 'about:blank') return url;
+  if (scheme !== 'http:' && scheme !== 'https:') {
+    throw new Error(
+      `Blocked navigation to a ${scheme} URL. Only http://, https:// and about:blank are allowed; ` +
+      `file:, data:, blob:, javascript:, chrome:, resource: and view-source: are disabled to prevent local-data access.`
+    );
+  }
+  if (BLOCK_PRIVATE_HOSTS && isPrivateHost(parsed.hostname)) {
+    throw new Error(
+      `Blocked navigation to private/loopback host ${JSON.stringify(parsed.hostname)} ` +
+      `(ZEN_BLOCK_PRIVATE_HOSTS is enabled).`
+    );
+  }
+  return url;
+}
+
+/**
+ * When ZEN_REDACT_URLS is enabled, strip the query string and fragment from
+ * http/https URLs before returning them to the LLM (these commonly carry OAuth
+ * codes, reset tokens and signed-URL parameters). Non-http(s) values and
+ * unparseable strings are returned unchanged.
+ */
+function sanitizeUrl(u) {
+  if (!REDACT_URLS || !u) return u;
+  try {
+    const p = new URL(u);
+    if (p.protocol !== 'http:' && p.protocol !== 'https:') return u;
+    return p.origin + p.pathname;
+  } catch {
+    return u;
+  }
+}
 
 // ─── BiDi Client ────────────────────────────────────────────────────
 
@@ -33,6 +136,7 @@ class BiDiClient {
   _intentionalDisconnect = false; // prevents auto-reconnect during shutdown
   _reconnecting = false; // guards against concurrent reconnect attempts
   _connectPromise = null; // deduplicates concurrent connect() calls
+  _reconnectTimer = null; // handle for the pending scheduled-reconnect backoff
 
   /**
    * Connect to Zen Browser's BiDi WebSocket.
@@ -40,7 +144,10 @@ class BiDiClient {
    * "Maximum number of active sessions", ends the stale session and retries.
    */
   async connect() {
-    if (this.ws?.readyState === WebSocket.OPEN && this.sessionId) return;
+    if (this.ws?.readyState === WebSocket.OPEN && this.sessionId) {
+      this._cancelScheduledReconnect();
+      return;
+    }
 
     // Deduplicate concurrent connect() calls
     if (this._connectPromise) return this._connectPromise;
@@ -48,6 +155,10 @@ class BiDiClient {
     this._connectPromise = this._doConnect();
     try {
       await this._connectPromise;
+      // Connected: drop any pending background backoff so the scheduled
+      // reconnect and a manual connect()/ensureConnected() don't run as
+      // rival loops.
+      this._cancelScheduledReconnect();
     } finally {
       this._connectPromise = null;
     }
@@ -80,6 +191,13 @@ class BiDiClient {
               log('Zombie recovery succeeded — new session created');
               resolve();
             } catch (retryErr) {
+              // Drop the half-open recovery socket so it doesn't leak. Null
+              // this.ws first so the stale-close guard suppresses a redundant
+              // auto-reconnect from the close we're about to trigger.
+              const dead = this.ws;
+              this.ws = null;
+              this.sessionId = null;
+              try { dead?.close(); } catch {}
               reject(new Error(
                 `Zen Browser has a zombie session that cannot be cleared remotely.\n` +
                 `This happens when a previous client disconnected without ending its session.\n\n` +
@@ -89,6 +207,13 @@ class BiDiClient {
               ));
             }
           } else {
+            // Non-zombie failure: close and drop the half-open socket so it
+            // doesn't leak (null first so the stale-close guard suppresses a
+            // redundant auto-reconnect). The caller handles retry/backoff.
+            const dead = this.ws;
+            this.ws = null;
+            this.sessionId = null;
+            try { dead?.close(); } catch {}
             reject(e);
           }
         }
@@ -185,6 +310,14 @@ class BiDiClient {
     });
 
     ws.on('close', (code, reason) => {
+      // Ignore close events from a socket we've already replaced; otherwise a
+      // stale socket's delayed close would clobber a freshly reconnected
+      // session — nulling the live ws/sessionId and rejecting its pending calls.
+      if (this.ws !== ws) {
+        log(`Ignoring close from a stale WebSocket (code: ${code})`);
+        return;
+      }
+
       log(`WebSocket closed (code: ${code}, reason: ${reason || 'none'})`);
       this.ws = null;
       this.sessionId = null;
@@ -206,6 +339,9 @@ class BiDiClient {
   /** Schedule a reconnect attempt with exponential backoff */
   _scheduleReconnect(attempt = 1) {
     if (this._reconnecting || this._intentionalDisconnect) return;
+    // Already healthy (e.g. ensureConnected reconnected us first) — don't start
+    // a rival backoff loop.
+    if (this.ws?.readyState === WebSocket.OPEN && this.sessionId) return;
     if (attempt > MAX_RECONNECT_ATTEMPTS) {
       log(`Reconnect failed after ${MAX_RECONNECT_ATTEMPTS} attempts. Use a tool to retry.`);
       return;
@@ -215,7 +351,8 @@ class BiDiClient {
     const delay = RECONNECT_BASE_DELAY * Math.pow(2, attempt - 1);
     log(`Reconnecting in ${delay}ms (attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS})...`);
 
-    setTimeout(async () => {
+    this._reconnectTimer = setTimeout(async () => {
+      this._reconnectTimer = null;
       try {
         await this.connect();
         log('Reconnected successfully');
@@ -226,6 +363,15 @@ class BiDiClient {
         this._scheduleReconnect(attempt + 1);
       }
     }, delay);
+  }
+
+  /** Cancel a pending scheduled reconnect (e.g. once we're connected again). */
+  _cancelScheduledReconnect() {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._reconnecting = false;
   }
 
   send(method, params = {}, timeout = 30000) {
@@ -285,6 +431,7 @@ class BiDiClient {
   }
 
   async navigate(url) {
+    assertNavigableUrl(url);
     const ctx = await this.getActiveContext();
     return this.send('browsingContext.navigate', {
       context: ctx,
@@ -322,6 +469,9 @@ class BiDiClient {
   }
 
   async createTab(url = 'about:blank') {
+    // Validate before creating the tab so an invalid/blocked URL doesn't leave
+    // an orphaned blank tab behind.
+    assertNavigableUrl(url);
     await this.ensureConnected();
     const result = await this.send('browsingContext.create', { type: 'tab' });
     const ctx = result.context;
@@ -346,6 +496,7 @@ class BiDiClient {
 
   async disconnect() {
     this._intentionalDisconnect = true;
+    this._cancelScheduledReconnect();
     await this.endSession();
     if (this.ws) {
       try { this.ws.close(); } catch {}
@@ -599,7 +750,7 @@ async function handleTool(name, args) {
         pages.push({
           index: i,
           contextId: ctx.context,
-          url: ctx.url || '',
+          url: sanitizeUrl(ctx.url || ''),
           active: ctx.context === bidi.currentContext,
           children: ctx.children?.length || 0,
         });
@@ -613,7 +764,7 @@ async function handleTool(name, args) {
         return text(`Invalid index ${args.index}. ${contexts.length} pages available.`);
       }
       bidi.currentContext = contexts[args.index].context;
-      return text(`Selected page ${args.index}: ${contexts[args.index].url}`);
+      return text(`Selected page ${args.index}: ${sanitizeUrl(contexts[args.index].url)}`);
     }
 
     case 'zen_new_tab': {
@@ -658,7 +809,10 @@ async function handleTool(name, args) {
             if (el.type) info.type = el.type;
             if (el.name) info.name = el.name;
             if (el.id) info.id = el.id;
-            if (el.value !== undefined && el.value !== '') info.value = String(el.value).substring(0, 200);
+            if (el.value !== undefined && el.value !== '') {
+              const sensitive = el.type === 'password' || el.type === 'hidden';
+              info.value = sensitive ? '[redacted]' : String(el.value).substring(0, 200);
+            }
             if (el.placeholder) info.placeholder = el.placeholder;
             if (el.checked !== undefined) info.checked = el.checked;
             if (el.href) info.href = el.href;
@@ -806,9 +960,15 @@ async function handleTool(name, args) {
               }));
             }
 
+            // Redact secret-bearing fields (passwords, hidden tokens) so their
+            // values are never sent to the LLM; presence is still reported.
+            const sensitive = el.type === 'password' || el.type === 'hidden';
+            const rawValue = el.value || '';
+            const safeValue = sensitive ? (rawValue ? '[redacted]' : '') : rawValue.substring(0, 200);
+
             return {
               index: i, tag, type: el.type || '', name: el.name || '',
-              id: el.id || '', selector, value: (el.value || '').substring(0, 200),
+              id: el.id || '', selector, value: safeValue, redacted: sensitive || undefined,
               placeholder: el.placeholder || '', label,
               checked: el.type === 'checkbox' || el.type === 'radio' ? el.checked : undefined,
               required: el.required || false, disabled: el.disabled || false,
@@ -926,7 +1086,9 @@ async function handleTool(name, args) {
           };
         }
       `, [{ type: 'number', value: maxLen }]);
-      return text(JSON.stringify(extractValue(result), null, 2));
+      const pageInfo = extractValue(result) || {};
+      if (pageInfo.url) pageInfo.url = sanitizeUrl(pageInfo.url);
+      return text(JSON.stringify(pageInfo, null, 2));
     }
 
     case 'zen_close_tab': {
@@ -944,7 +1106,7 @@ async function handleTool(name, args) {
         const remaining = await bidi.getContexts();
         bidi.currentContext = remaining.length > 0 ? remaining[0].context : null;
       }
-      return text(`Closed tab ${args.index}: ${contexts[args.index].url || 'about:blank'}`);
+      return text(`Closed tab ${args.index}: ${sanitizeUrl(contexts[args.index].url) || 'about:blank'}`);
     }
 
     case 'zen_wait_for': {

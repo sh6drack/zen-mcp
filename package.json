@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node test-e2e.mjs",
-    "launch-zen": "open /Applications/Zen.app --args --remote-debugging-port 9222"
+    "launch-zen": "bash launch-zen.sh"
   },
   "keywords": [
     "mcp",
