@@ -332,6 +332,18 @@ class BiDiClient {
     return ctx;
   }
 
+  /**
+   * Bring a tab to the foreground in the browser UI.
+   * Distinct from selecting a target: selection only changes which context this
+   * server acts on, it does not move the user's visible tab.
+   */
+  async activate(context) {
+    await this.ensureConnected();
+    await this.send('browsingContext.activate', { context });
+    this.currentContext = context;
+    return context;
+  }
+
   async endSession() {
     if (this.ws?.readyState === WebSocket.OPEN && this.sessionId) {
       try {
@@ -390,6 +402,15 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: { index: { type: 'number', description: 'Page index' } },
+      required: ['index'],
+    },
+  },
+  {
+    name: 'zen_focus_tab',
+    description: 'Bring a page/tab to the foreground in the browser UI (by index from zen_list_pages). Unlike zen_select_page, this moves what the user actually sees.',
+    inputSchema: {
+      type: 'object',
+      properties: { index: { type: 'number', description: 'Tab index to focus (from zen_list_pages)' } },
       required: ['index'],
     },
   },
@@ -614,6 +635,15 @@ async function handleTool(name, args) {
       }
       bidi.currentContext = contexts[args.index].context;
       return text(`Selected page ${args.index}: ${contexts[args.index].url}`);
+    }
+
+    case 'zen_focus_tab': {
+      const contexts = await bidi.getContexts();
+      if (args.index < 0 || args.index >= contexts.length) {
+        return text(`Invalid index ${args.index}. ${contexts.length} pages available.`);
+      }
+      await bidi.activate(contexts[args.index].context);
+      return text(`Focused page ${args.index}: ${contexts[args.index].url}`);
     }
 
     case 'zen_new_tab': {
