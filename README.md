@@ -58,7 +58,8 @@ Add to `~/.claude/settings.json`:
 |------|-------------|
 | `zen_navigate` | Go to a URL |
 | `zen_list_pages` | List all open tabs |
-| `zen_select_page` | Switch to a tab |
+| `zen_select_page` | Point automation at a tab (does not change what the user sees) |
+| `zen_focus_tab` | Bring a tab to the foreground in the browser UI |
 | `zen_new_tab` | Open a new tab |
 | `zen_close_tab` | Close a tab |
 
